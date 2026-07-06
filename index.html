@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI英会話練習アプリ</title>
+    <title>AI英会話練習アプリ V2</title>
     <style>
         :root {
             --bg-color: #f5f7fb;
@@ -41,7 +41,6 @@
             overflow: hidden;
         }
 
-        /* 設定エリア */
         .settings-panel {
             padding: 15px;
             border-bottom: 1px solid var(--border-color);
@@ -76,7 +75,6 @@
         }
         .start-btn:hover { background-color: var(--primary-hover); }
 
-        /* チャットエリア */
         .chat-timeline {
             flex: 1;
             padding: 20px;
@@ -112,7 +110,38 @@
             border-top-right-radius: 4px;
         }
 
-        /* マスク表現 */
+        /* エラー用の吹き出し */
+        .ai .error-bubble {
+            background-color: #fde8e8 !important;
+            color: #e53e3e !important;
+            border: 1px solid #f5c6c6;
+            font-size: 14px;
+        }
+
+        /* ローディングアニメーション */
+        .loading-bubble {
+            display: flex;
+            gap: 6px;
+            padding: 14px 18px;
+            background-color: #f0f0f0;
+            border-radius: 18px;
+            border-top-left-radius: 4px;
+            align-self: flex-start;
+        }
+        .dot {
+            width: 8px;
+            height: 8px;
+            background-color: #888;
+            border-radius: 50%;
+            animation: bounce 1.4s infinite ease-in-out both;
+        }
+        .dot:nth-child(1) { animation-delay: -0.32s; }
+        .dot:nth-child(2) { animation-delay: -0.16s; }
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1.0); }
+        }
+
         .masked-text {
             filter: blur(5px);
             user-select: none;
@@ -134,7 +163,6 @@
             color: #fff;
         }
 
-        /* コントロールエリア */
         .control-panel {
             padding: 20px;
             border-top: 1px solid var(--border-color);
@@ -166,6 +194,7 @@
             font-size: 12px;
             color: #888;
             margin-top: 5px;
+            padding-bottom: 10px;
         }
     </style>
 </head>
@@ -189,8 +218,7 @@
         <button class="start-btn" id="start-btn">会話を開始する</button>
     </div>
 
-    <div class="chat-timeline" id="chat-timeline">
-        </div>
+    <div class="chat-timeline" id="chat-timeline"></div>
 
     <div>
         <div class="control-panel">
@@ -201,13 +229,11 @@
 </div>
 
 <script>
-    // 状態管理
     let apiKey = '';
     let currentSituation = '';
     let conversationHistory = [];
     let isRecording = false;
 
-    // Web Speech API の初期化
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     let recognition = null;
     if (SpeechRecognition) {
@@ -216,12 +242,11 @@
         recognition.interimResults = false;
         recognition.maxAlternatives = 1;
     } else {
-        alert('お使いのブラウザは音声認識（SpeechRecognition）に対応していません。Google Chrome等をお試しください。');
+        alert('お使いのブラウザは音声認識に対応していません。ChromeやSafariの最新版をお試しください。');
     }
 
     const synth = window.speechSynthesis;
 
-    // DOM要素
     const startBtn = document.getElementById('start-btn');
     const pttBtn = document.getElementById('ptt-btn');
     const apiKeyInput = document.getElementById('api-key');
@@ -230,10 +255,8 @@
     const statusText = document.getElementById('status-text');
     const settingsPanel = document.getElementById('settings-panel');
 
-    // イベントリスナー
     startBtn.addEventListener('click', startConversation);
 
-    // Push-to-Talk (マウス/タッチイベント)
     if (recognition) {
         pttBtn.addEventListener('mousedown', startSpeechRecognition);
         pttBtn.addEventListener('mouseup', stopSpeechRecognition);
@@ -248,7 +271,6 @@
         };
     }
 
-    // 会話開始処理
     async function startConversation() {
         apiKey = apiKeyInput.value.trim();
         currentSituation = situationSelect.options[situationSelect.selectedIndex].text;
@@ -262,7 +284,6 @@
         pttBtn.disabled = false;
         statusText.innerText = '会話を準備中...';
 
-        // 初期プロンプトの設定（システム命令の役割）
         conversationHistory = [
             {
                 role: 'user',
@@ -270,13 +291,25 @@
             }
         ];
 
-        // AIの最初のセリフを取得
         await generateAiResponse();
     }
 
-    // LLM（Gemini API）呼び出し
     async function generateAiResponse() {
         statusText.innerText = 'AIが考え中...';
+        
+        // タイムラインにローディングアニメーションを追加
+        const loadingDiv = document.createElement('div');
+        loadingDiv.classList.add('message', 'ai');
+        loadingDiv.innerHTML = `
+            <div class="loading-bubble">
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <div class="dot"></div>
+            </div>
+        `;
+        chatTimeline.appendChild(loadingDiv);
+        chatTimeline.scrollTop = chatTimeline.scrollHeight;
+
         const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
 
         try {
@@ -286,31 +319,42 @@
                 body: JSON.stringify({ contents: conversationHistory })
             });
 
+            loadingDiv.remove();
+
+            if (!response.ok) {
+                const errData = await response.json();
+                throw new Error(errData.error?.message || `APIエラー (Status: ${response.status})`);
+            }
+
             const data = await response.json();
             if (data.candidates && data.candidates[0].content.parts[0].text) {
                 const aiText = data.candidates[0].content.parts[0].text.trim();
                 
-                // 履歴に追加
                 conversationHistory.push({
                     role: 'model',
                     parts: [{ text: aiText }]
                 });
 
-                // 画面に追加（デフォルトマスク）
                 addMessageToTimeline('ai', aiText);
-                // 音声再生
                 speak(aiText);
                 statusText.innerText = 'ボタンを押しながら話してください（英語）';
             } else {
-                throw new Error('不適切なレスポンス構造です。');
+                throw new Error('不適切なレスポンスを受け取りました。');
             }
         } catch (error) {
+            if (loadingDiv) loadingDiv.remove();
             console.error(error);
-            statusText.innerText = 'エラーが発生しました。APIキーまたはネットワークを確認してください。';
+            statusText.innerText = `エラーが発生しました`;
+            
+            // 画面上にエラーを表示
+            addErrorMessageToTimeline(error.message);
+            
+            // 設定画面を再表示してやり直せるようにする
+            settingsPanel.style.display = 'block';
+            pttBtn.disabled = true;
         }
     }
 
-    // 音声合成（TTS）
     function speak(text) {
         if (synth.speaking) {
             synth.cancel();
@@ -318,7 +362,6 @@
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = 'en-US';
         
-        // ネイティブに近い英語話者の声を探索
         const voices = synth.getVoices();
         const enVoice = voices.find(v => v.lang.startsWith('en-') && !v.localService) || voices.find(v => v.lang.startsWith('en-'));
         if (enVoice) utterance.voice = enVoice;
@@ -326,17 +369,15 @@
         synth.speak(utterance);
     }
 
-    // 音声認識開始
     function startSpeechRecognition() {
         if (!recognition || isRecording) return;
-        synth.cancel(); // AIの発話をストップ
+        synth.cancel();
         isRecording = true;
         pttBtn.classList.add('recording');
-        statusText.innerText = '音声認識中... 話してください...';
+        statusText.innerText = '発話を認識中...';
         recognition.start();
     }
 
-    // 音声認識終了
     function stopSpeechRecognition() {
         if (!recognition || !isRecording) return;
         isRecording = false;
@@ -345,25 +386,20 @@
         recognition.stop();
     }
 
-    // 音声認識結果の処理
     async function handleSpeechResult(event) {
         const userText = event.results[0][0].transcript;
         if (!userText) return;
 
-        // ユーザーの発話を画面に表示
         addMessageToTimeline('user', userText);
 
-        // 履歴に追加
         conversationHistory.push({
             role: 'user',
             parts: [{ text: userText }]
         });
 
-        // AIの返答を生成
         await generateAiResponse();
     }
 
-    // タイムラインへのメッセージ追加
     function addMessageToTimeline(sender, text) {
         const msgDiv = document.createElement('div');
         msgDiv.classList.add('message', sender);
@@ -373,7 +409,6 @@
         bubble.innerText = text;
 
         if (sender === 'ai') {
-            // AIの場合は初期状態でマスクする
             bubble.classList.add('masked-text');
             
             const revealBtn = document.createElement('button');
@@ -391,10 +426,20 @@
         }
 
         chatTimeline.appendChild(msgDiv);
-        chatTimeline.scrollTop = chatTimeline.scrollHeight; // 最下部へスクロール
+        chatTimeline.scrollTop = chatTimeline.scrollHeight;
     }
 
-    // 音声リストの読み込み待ち（ブラウザ対策）
+    function addErrorMessageToTimeline(text) {
+        const msgDiv = document.createElement('div');
+        msgDiv.classList.add('message', 'ai');
+        const bubble = document.createElement('div');
+        bubble.classList.add('bubble', 'error-bubble');
+        bubble.innerText = `【システムエラー】\n${text}\n\nキーに間違いがないか、またはGoogle AI Studio側で制限がかかっていないかご確認ください。`;
+        msgDiv.appendChild(bubble);
+        chatTimeline.appendChild(msgDiv);
+        chatTimeline.scrollTop = chatTimeline.scrollHeight;
+    }
+
     if (speechSynthesis.onvoiceschanged !== undefined) {
         speechSynthesis.onvoiceschanged = () => synth.getVoices();
     }
