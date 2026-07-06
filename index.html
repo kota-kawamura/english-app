@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI英会話練習アプリ V2</title>
+    <title>AI英会話練習アプリ V3</title>
     <style>
         :root {
             --bg-color: #f5f7fb;
@@ -73,7 +73,6 @@
             font-weight: bold;
             cursor: pointer;
         }
-        .start-btn:hover { background-color: var(--primary-hover); }
 
         .chat-timeline {
             flex: 1;
@@ -110,7 +109,6 @@
             border-top-right-radius: 4px;
         }
 
-        /* エラー用の吹き出し */
         .ai .error-bubble {
             background-color: #fde8e8 !important;
             color: #e53e3e !important;
@@ -118,7 +116,6 @@
             font-size: 14px;
         }
 
-        /* ローディングアニメーション */
         .loading-bubble {
             display: flex;
             gap: 6px;
@@ -158,10 +155,6 @@
             cursor: pointer;
             align-self: flex-start;
         }
-        .reveal-btn:hover {
-            background: var(--primary-color);
-            color: #fff;
-        }
 
         .control-panel {
             padding: 20px;
@@ -187,7 +180,14 @@
         .ptt-btn:active, .ptt-btn.recording {
             background-color: var(--mic-hover);
             transform: scale(0.95);
-            box-shadow: 0 2px 5px rgba(234, 67, 53, 0.4);
+        }
+        /* 無効化時のスタイルを明示 */
+        .ptt-btn:disabled {
+            background-color: #cccccc !important;
+            box-shadow: none !important;
+            color: #888888 !important;
+            cursor: not-allowed;
+            opacity: 0.6;
         }
         .status-text {
             text-align: center;
@@ -241,8 +241,6 @@
         recognition.lang = 'en-US';
         recognition.interimResults = false;
         recognition.maxAlternatives = 1;
-    } else {
-        alert('お使いのブラウザは音声認識に対応していません。ChromeやSafariの最新版をお試しください。');
     }
 
     const synth = window.speechSynthesis;
@@ -258,10 +256,11 @@
     startBtn.addEventListener('click', startConversation);
 
     if (recognition) {
-        pttBtn.addEventListener('mousedown', startSpeechRecognition);
-        pttBtn.addEventListener('mouseup', stopSpeechRecognition);
-        pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startSpeechRecognition(); });
-        pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopSpeechRecognition(); });
+        // iOSバグ対策: 内部のdisabled判定を厳格化
+        pttBtn.addEventListener('mousedown', (e) => { if(!pttBtn.disabled) startSpeechRecognition(); });
+        pttBtn.addEventListener('mouseup', (e) => { if(!pttBtn.disabled) stopSpeechRecognition(); });
+        pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); if(!pttBtn.disabled) startSpeechRecognition(); });
+        pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); if(!pttBtn.disabled) stopSpeechRecognition(); });
 
         recognition.onresult = handleSpeechResult;
         recognition.onerror = (e) => {
@@ -280,8 +279,12 @@
             return;
         }
 
+        // iOS対策: ユーザーのタップ直後に空の音声を流して再生ブロックを解除
+        const audioUnlock = new SpeechSynthesisUtterance('');
+        synth.speak(audioUnlock);
+
         settingsPanel.style.display = 'none';
-        pttBtn.disabled = false;
+        pttBtn.disabled = true; // AIの最初の返答があるまで明示的に無効化
         statusText.innerText = '会話を準備中...';
 
         conversationHistory = [
@@ -296,8 +299,8 @@
 
     async function generateAiResponse() {
         statusText.innerText = 'AIが考え中...';
+        pttBtn.disabled = true;
         
-        // タイムラインにローディングアニメーションを追加
         const loadingDiv = document.createElement('div');
         loadingDiv.classList.add('message', 'ai');
         loadingDiv.innerHTML = `
@@ -337,6 +340,8 @@
 
                 addMessageToTimeline('ai', aiText);
                 speak(aiText);
+                
+                pttBtn.disabled = false; // AIが喋り終わるタイミング、または発話開始時に有効化
                 statusText.innerText = 'ボタンを押しながら話してください（英語）';
             } else {
                 throw new Error('不適切なレスポンスを受け取りました。');
@@ -345,11 +350,7 @@
             if (loadingDiv) loadingDiv.remove();
             console.error(error);
             statusText.innerText = `エラーが発生しました`;
-            
-            // 画面上にエラーを表示
             addErrorMessageToTimeline(error.message);
-            
-            // 設定画面を再表示してやり直せるようにする
             settingsPanel.style.display = 'block';
             pttBtn.disabled = true;
         }
@@ -434,7 +435,7 @@
         msgDiv.classList.add('message', 'ai');
         const bubble = document.createElement('div');
         bubble.classList.add('bubble', 'error-bubble');
-        bubble.innerText = `【システムエラー】\n${text}\n\nキーに間違いがないか、またはGoogle AI Studio側で制限がかかっていないかご確認ください。`;
+        bubble.innerText = `【システムエラー】\n${text}\n\nキーの確認、またはページの再読み込みをお試しください。`;
         msgDiv.appendChild(bubble);
         chatTimeline.appendChild(msgDiv);
         chatTimeline.scrollTop = chatTimeline.scrollHeight;
