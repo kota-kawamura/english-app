@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI英会話練習アプリ V3</title>
+    <title>AI英会話練習アプリ V4</title>
     <style>
         :root {
             --bg-color: #f5f7fb;
@@ -181,7 +181,6 @@
             background-color: var(--mic-hover);
             transform: scale(0.95);
         }
-        /* 無効化時のスタイルを明示 */
         .ptt-btn:disabled {
             background-color: #cccccc !important;
             box-shadow: none !important;
@@ -256,7 +255,6 @@
     startBtn.addEventListener('click', startConversation);
 
     if (recognition) {
-        // iOSバグ対策: 内部のdisabled判定を厳格化
         pttBtn.addEventListener('mousedown', (e) => { if(!pttBtn.disabled) startSpeechRecognition(); });
         pttBtn.addEventListener('mouseup', (e) => { if(!pttBtn.disabled) stopSpeechRecognition(); });
         pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); if(!pttBtn.disabled) startSpeechRecognition(); });
@@ -279,12 +277,11 @@
             return;
         }
 
-        // iOS対策: ユーザーのタップ直後に空の音声を流して再生ブロックを解除
         const audioUnlock = new SpeechSynthesisUtterance('');
         synth.speak(audioUnlock);
 
         settingsPanel.style.display = 'none';
-        pttBtn.disabled = true; // AIの最初の返答があるまで明示的に無効化
+        pttBtn.disabled = true;
         statusText.innerText = '会話を準備中...';
 
         conversationHistory = [
@@ -313,7 +310,8 @@
         chatTimeline.appendChild(loadingDiv);
         chatTimeline.scrollTop = chatTimeline.scrollHeight;
 
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+        // URLを正式版の v1 に修正
+        const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
 
         try {
             const response = await fetch(url, {
@@ -341,7 +339,7 @@
                 addMessageToTimeline('ai', aiText);
                 speak(aiText);
                 
-                pttBtn.disabled = false; // AIが喋り終わるタイミング、または発話開始時に有効化
+                pttBtn.disabled = false;
                 statusText.innerText = 'ボタンを押しながら話してください（英語）';
             } else {
                 throw new Error('不適切なレスポンスを受け取りました。');
