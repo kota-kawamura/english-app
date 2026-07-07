@@ -46,6 +46,16 @@
             border-bottom: 1px solid var(--border-color);
             background: #fafafa;
         }
+        .version-tag {
+            text-align: center;
+            font-size: 14px;
+            color: var(--primary-color);
+            font-weight: bold;
+            margin: 0 0 15px 0;
+            padding: 4px;
+            background: #eef5fc;
+            border-radius: 4px;
+        }
         .input-group {
             margin-bottom: 10px;
             display: flex;
@@ -201,6 +211,8 @@
 
 <div class="container">
     <div class="settings-panel" id="settings-panel">
+        <div class="version-tag">現在動作中のバージョン: V4 (URL修正済)</div>
+        
         <div class="input-group">
             <label for="api-key">Gemini API Key</label>
             <input type="password" id="api-key" placeholder="AIZA...（APIキーを入力）">
@@ -310,7 +322,7 @@
         chatTimeline.appendChild(loadingDiv);
         chatTimeline.scrollTop = chatTimeline.scrollHeight;
 
-        // URLを正式版の v1 に修正
+        // URLを正式版の v1 に修正済
         const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
 
         try {
@@ -425,24 +437,4 @@
         }
 
         chatTimeline.appendChild(msgDiv);
-        chatTimeline.scrollTop = chatTimeline.scrollHeight;
-    }
-
-    function addErrorMessageToTimeline(text) {
-        const msgDiv = document.createElement('div');
-        msgDiv.classList.add('message', 'ai');
-        const bubble = document.createElement('div');
-        bubble.classList.add('bubble', 'error-bubble');
-        bubble.innerText = `【システムエラー】\n${text}\n\nキーの確認、またはページの再読み込みをお試しください。`;
-        msgDiv.appendChild(bubble);
-        chatTimeline.appendChild(msgDiv);
-        chatTimeline.scrollTop = chatTimeline.scrollHeight;
-    }
-
-    if (speechSynthesis.onvoiceschanged !== undefined) {
-        speechSynthesis.onvoiceschanged = () => synth.getVoices();
-    }
-</script>
-
-</body>
-</html>
+        chat
