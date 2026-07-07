@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI英会話練習アプリ V5</title>
+    <title>AI英会話練習アプリ V6</title>
     <style>
         :root {
             --bg-color: #f5f7fb;
@@ -56,6 +56,16 @@
             background: #eef5fc;
             border-radius: 4px;
         }
+        .warning-banner {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeeba;
+            border-radius: 6px;
+            padding: 10px;
+            font-size: 13px;
+            margin-bottom: 12px;
+            display: none;
+        }
         .input-group {
             margin-bottom: 10px;
             display: flex;
@@ -73,6 +83,14 @@
             border-radius: 6px;
             font-size: 14px;
         }
+        .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 10px;
+        }
         .start-btn {
             width: 100%;
             padding: 10px;
@@ -82,6 +100,10 @@
             border-radius: 6px;
             font-weight: bold;
             cursor: pointer;
+        }
+        .start-btn:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
         }
 
         .chat-timeline {
@@ -107,6 +129,7 @@
             font-size: 16px;
             line-height: 1.4;
             position: relative;
+            white-space: pre-wrap;
         }
         .ai .bubble {
             background-color: #f0f0f0;
@@ -211,11 +234,18 @@
 
 <div class="container">
     <div class="settings-panel" id="settings-panel">
-        <div class="version-tag">現在動作中のバージョン: V5 (起動例外ガード版)</div>
-        
+        <div class="version-tag">現在動作中のバージョン: V6（バグ修正版）</div>
+        <div class="warning-banner" id="browser-warning">
+            お使いのブラウザは音声認識(Web Speech API)に対応していません。Google Chromeでのご利用を推奨します。テキスト表示・音声読み上げのみ利用できます。
+        </div>
+
         <div class="input-group">
             <label for="api-key">Gemini API Key</label>
-            <input type="password" id="api-key" placeholder="AIZA...（APIキーを入力）">
+            <input type="password" id="api-key" placeholder="AIza...（APIキーを入力）">
+        </div>
+        <div class="checkbox-row">
+            <input type="checkbox" id="remember-key">
+            <label for="remember-key">このブラウザにAPIキーを保存する（共有PCでは非推奨）</label>
         </div>
         <div class="input-group">
             <label for="situation">シチュエーション選択</label>
@@ -240,22 +270,32 @@
 </div>
 
 <script>
+    // ===== 設定 =====
+    // 2026年7月時点でGemini 1.5系は提供終了(EOL)しているため 2.5系を使用。
+    // 必要に応じて gemini-2.5-flash / gemini-2.5-flash-lite などに変更してください。
+    const MODEL_NAME = 'gemini-2.5-flash';
+    const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+
     let apiKey = '';
     let currentSituation = '';
     let conversationHistory = [];
     let isRecording = false;
+    let recognitionActive = false; // recognition.start()〜onend/onerror の間だけtrue
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const speechSupported = !!SpeechRecognition;
     let recognition = null;
-    try {
-        if (SpeechRecognition) {
+
+    if (speechSupported) {
+        try {
             recognition = new SpeechRecognition();
             recognition.lang = 'en-US';
             recognition.interimResults = false;
             recognition.maxAlternatives = 1;
+        } catch (e) {
+            console.error("SpeechRecognition initialization failed:", e);
+            recognition = null;
         }
-    } catch(e) {
-        console.error("SpeechRecognition initialization failed:", e);
     }
 
     const synth = window.speechSynthesis;
@@ -263,40 +303,97 @@
     const startBtn = document.getElementById('start-btn');
     const pttBtn = document.getElementById('ptt-btn');
     const apiKeyInput = document.getElementById('api-key');
+    const rememberKeyCheckbox = document.getElementById('remember-key');
     const situationSelect = document.getElementById('situation');
     const chatTimeline = document.getElementById('chat-timeline');
     const statusText = document.getElementById('status-text');
     const settingsPanel = document.getElementById('settings-panel');
+    const browserWarning = document.getElementById('browser-warning');
+
+    // ブラウザが音声認識非対応の場合は、起動前にはっきり警告する
+    if (!recognition) {
+        browserWarning.style.display = 'block';
+    }
+
+    // 保存済みAPIキーがあれば復元（ローカルストレージ・任意）
+    try {
+        const savedKey = localStorage.getItem('gemini_api_key');
+        if (savedKey) {
+            apiKeyInput.value = savedKey;
+            rememberKeyCheckbox.checked = true;
+        }
+    } catch (e) {
+        // プライベートブラウジング等でlocalStorageが使えない場合は無視
+    }
 
     startBtn.addEventListener('click', startConversation);
 
     if (recognition) {
-        pttBtn.addEventListener('mousedown', (e) => { if(!pttBtn.disabled) startSpeechRecognition(); });
-        pttBtn.addEventListener('mouseup', (e) => { if(!pttBtn.disabled) stopSpeechRecognition(); });
-        pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); if(!pttBtn.disabled) startSpeechRecognition(); });
-        pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); if(!pttBtn.disabled) stopSpeechRecognition(); });
+        pttBtn.addEventListener('mousedown', onPressStart);
+        pttBtn.addEventListener('mouseup', onPressEnd);
+        // ボタン外でマウスを離した場合も確実に録音を止める
+        pttBtn.addEventListener('mouseleave', onPressEnd);
+        pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); onPressStart(); });
+        pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); onPressEnd(); });
+        pttBtn.addEventListener('touchcancel', (e) => { e.preventDefault(); onPressEnd(); });
 
         recognition.onresult = handleSpeechResult;
+
         recognition.onerror = (e) => {
             console.error(e);
-            statusText.innerText = `認識エラー: ${e.error}`;
+            recognitionActive = false;
+            isRecording = false; // ★これが無いと以後ボタンが二度と反応しなくなるバグがあった
             pttBtn.classList.remove('recording');
+
+            if (e.error === 'no-speech') {
+                statusText.innerText = '発話が検出されませんでした。もう一度お試しください。';
+            } else if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+                statusText.innerText = 'マイクの使用が許可されていません。ブラウザの設定をご確認ください。';
+            } else {
+                statusText.innerText = `認識エラー: ${e.error}`;
+            }
         };
+
+        // ブラウザ側が自動でタイムアウトした場合など、resultなしで終了するケースに対応
+        recognition.onend = () => {
+            recognitionActive = false;
+            isRecording = false;
+            pttBtn.classList.remove('recording');
+            if (statusText.innerText === '発話を認識中...') {
+                statusText.innerText = 'ボタンを押しながら話してください（英語）';
+            }
+        };
+    }
+
+    function onPressStart() {
+        if (!pttBtn.disabled) startSpeechRecognition();
+    }
+    function onPressEnd() {
+        if (!pttBtn.disabled) stopSpeechRecognition();
     }
 
     async function startConversation() {
         try {
             apiKey = apiKeyInput.value.trim();
-            
-            if (situationSelect && situationSelect.selectedIndex >= 0) {
-                currentSituation = situationSelect.options[situationSelect.selectedIndex].text;
-            } else {
-                currentSituation = "English Conversation";
-            }
 
             if (!apiKey) {
                 alert('Gemini APIキーを入力してください。');
                 return;
+            }
+
+            // APIキー保存/削除
+            try {
+                if (rememberKeyCheckbox.checked) {
+                    localStorage.setItem('gemini_api_key', apiKey);
+                } else {
+                    localStorage.removeItem('gemini_api_key');
+                }
+            } catch (e) { /* ignore */ }
+
+            if (situationSelect && situationSelect.selectedIndex >= 0) {
+                currentSituation = situationSelect.options[situationSelect.selectedIndex].text;
+            } else {
+                currentSituation = "English Conversation";
             }
 
             // 音声解放処理でのクラッシュを安全に回避
@@ -305,7 +402,7 @@
                     const audioUnlock = new SpeechSynthesisUtterance('');
                     synth.speak(audioUnlock);
                 }
-            } catch(speechErr) {
+            } catch (speechErr) {
                 console.warn("SpeechSynthesis unlock skipped:", speechErr);
             }
 
@@ -322,7 +419,6 @@
 
             await generateAiResponse();
         } catch (err) {
-            // ボタンを押した瞬間のエラーを強制ポップアップ
             alert("ボタン処理内でエラーが発生しました:\n" + err.message);
             console.error(err);
         }
@@ -331,7 +427,7 @@
     async function generateAiResponse() {
         statusText.innerText = 'AIが考え中...';
         pttBtn.disabled = true;
-        
+
         const loadingDiv = document.createElement('div');
         loadingDiv.classList.add('message', 'ai');
         loadingDiv.innerHTML = `
@@ -344,26 +440,47 @@
         chatTimeline.appendChild(loadingDiv);
         chatTimeline.scrollTop = chatTimeline.scrollHeight;
 
-        const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+        const url = `${API_BASE}/${MODEL_NAME}:generateContent`;
 
         try {
             const response = await fetch(url, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ contents: conversationHistory })
+                headers: {
+                    'Content-Type': 'application/json',
+                    // APIキーをURLクエリではなくヘッダーで送る（履歴に残らない）
+                    'x-goog-api-key': apiKey
+                },
+                body: JSON.stringify({
+                    contents: conversationHistory,
+                    generationConfig: {
+                        maxOutputTokens: 200,
+                        temperature: 0.9
+                    }
+                })
             });
 
             loadingDiv.remove();
 
             if (!response.ok) {
-                const errData = await response.json();
-                throw new Error(errData.error?.message || `APIエラー (Status: ${response.status})`);
+                let errMessage = `APIエラー (Status: ${response.status})`;
+                try {
+                    const errData = await response.json();
+                    errMessage = errData.error?.message || errMessage;
+                } catch (parseErr) { /* JSONでない場合はデフォルトメッセージ */ }
+
+                if (response.status === 404) {
+                    errMessage += `\n（モデル名 "${MODEL_NAME}" が存在しないか、提供終了になっている可能性があります）`;
+                } else if (response.status === 400) {
+                    errMessage += '\n（APIキーが無効、または不正なリクエストの可能性があります）';
+                }
+                throw new Error(errMessage);
             }
 
             const data = await response.json();
-            if (data.candidates && data.candidates[0].content.parts[0].text) {
-                const aiText = data.candidates[0].content.parts[0].text.trim();
-                
+            const candidate = data.candidates && data.candidates[0];
+            const aiText = candidate?.content?.parts?.[0]?.text?.trim();
+
+            if (aiText) {
                 conversationHistory.push({
                     role: 'model',
                     parts: [{ text: aiText }]
@@ -371,9 +488,13 @@
 
                 addMessageToTimeline('ai', aiText);
                 speak(aiText);
-                
-                pttBtn.disabled = false;
-                statusText.innerText = 'ボタンを押しながら話してください（英語）';
+
+                pttBtn.disabled = !recognition; // 音声認識非対応ブラウザでは押せないままにする
+                statusText.innerText = recognition
+                    ? 'ボタンを押しながら話してください（英語）'
+                    : 'このブラウザでは音声入力は利用できません（読み上げのみ）';
+            } else if (candidate?.finishReason === 'SAFETY') {
+                throw new Error('安全性の理由により応答がブロックされました。別の内容でお試しください。');
             } else {
                 throw new Error('不適切なレスポンスを受け取りました。');
             }
@@ -394,29 +515,32 @@
             }
             const utterance = new SpeechSynthesisUtterance(text);
             utterance.lang = 'en-US';
-            
+
             const voices = synth.getVoices();
             const enVoice = voices.find(v => v.lang.startsWith('en-') && !v.localService) || voices.find(v => v.lang.startsWith('en-'));
             if (enVoice) utterance.voice = enVoice;
 
             synth.speak(utterance);
-        } catch(e) {
+        } catch (e) {
             console.error("TTS output failed:", e);
         }
     }
 
     function startSpeechRecognition() {
-        if (!recognition || isRecording) return;
+        if (!recognition || isRecording || recognitionActive) return;
         try {
             synth.cancel();
             isRecording = true;
+            recognitionActive = true;
             pttBtn.classList.add('recording');
             statusText.innerText = '発話を認識中...';
             recognition.start();
-        } catch(e) {
+        } catch (e) {
+            console.error(e);
             statusText.innerText = `マイク起動エラー: ${e.message}`;
             pttBtn.classList.remove('recording');
             isRecording = false;
+            recognitionActive = false;
         }
     }
 
@@ -427,13 +551,15 @@
         statusText.innerText = '処理中...';
         try {
             recognition.stop();
-        } catch(e) {
+        } catch (e) {
             console.error(e);
+            recognitionActive = false;
         }
     }
 
     async function handleSpeechResult(event) {
         const userText = event.results[0][0].transcript;
+        recognitionActive = false;
         if (!userText) return;
 
         addMessageToTimeline('user', userText);
@@ -456,7 +582,7 @@
 
         if (sender === 'ai') {
             bubble.classList.add('masked-text');
-            
+
             const revealBtn = document.createElement('button');
             revealBtn.classList.add('reveal-btn');
             revealBtn.innerText = '英文を表示 (Show Text)';
@@ -486,8 +612,8 @@
         chatTimeline.scrollTop = chatTimeline.scrollHeight;
     }
 
-    if (speechSynthesis && speechSynthesis.onvoiceschanged !== undefined) {
-        speechSynthesis.onvoiceschanged = () => synth.getVoices();
+    if (synth && synth.onvoiceschanged !== undefined) {
+        synth.onvoiceschanged = () => synth.getVoices();
     }
 </script>
 
