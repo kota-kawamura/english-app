@@ -281,21 +281,24 @@
     let conversationHistory = [];
     let isRecording = false;
     let recognitionActive = false; // recognition.start()〜onend/onerror の間だけtrue
+    let resultReceivedThisSession = false; // このstart()〜end()の間にonresultが来たか
 
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const speechSupported = !!SpeechRecognition;
-    let recognition = null;
+    const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const speechSupported = !!SpeechRecognitionCtor;
+    let recognition = null; // 現在のセッションで使っているインスタンス（毎回作り直す）
+    let watchdogTimer = null; // iOS/Safariでイベントが一切発火しないケース用の保険タイマー
 
-    if (speechSupported) {
-        try {
-            recognition = new SpeechRecognition();
-            recognition.lang = 'en-US';
-            recognition.interimResults = false;
-            recognition.maxAlternatives = 1;
-        } catch (e) {
-            console.error("SpeechRecognition initialization failed:", e);
-            recognition = null;
-        }
+    // iOS(Safari系エンジン)はイベントの取りこぼしや使い回し時の不安定動作が知られているため、
+    // start()のたびに新しいSpeechRecognitionインスタンスを生成する
+    function createRecognition() {
+        const r = new SpeechRecognitionCtor();
+        r.lang = 'en-US';
+        r.interimResults = false;
+        r.maxAlternatives = 1;
+        r.onresult = handleSpeechResult;
+        r.onerror = handleRecognitionError;
+        r.onend = handleRecognitionEnd;
+        return r;
     }
 
     const synth = window.speechSynthesis;
@@ -311,7 +314,7 @@
     const browserWarning = document.getElementById('browser-warning');
 
     // ブラウザが音声認識非対応の場合は、起動前にはっきり警告する
-    if (!recognition) {
+    if (!speechSupported) {
         browserWarning.style.display = 'block';
     }
 
@@ -328,7 +331,7 @@
 
     startBtn.addEventListener('click', startConversation);
 
-    if (recognition) {
+    if (speechSupported) {
         pttBtn.addEventListener('mousedown', onPressStart);
         pttBtn.addEventListener('mouseup', onPressEnd);
         // ボタン外でマウスを離した場合も確実に録音を止める
@@ -336,33 +339,53 @@
         pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); onPressStart(); });
         pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); onPressEnd(); });
         pttBtn.addEventListener('touchcancel', (e) => { e.preventDefault(); onPressEnd(); });
+    }
 
-        recognition.onresult = handleSpeechResult;
+    function clearWatchdog() {
+        if (watchdogTimer) {
+            clearTimeout(watchdogTimer);
+            watchdogTimer = null;
+        }
+    }
 
-        recognition.onerror = (e) => {
-            console.error(e);
-            recognitionActive = false;
-            isRecording = false; // ★これが無いと以後ボタンが二度と反応しなくなるバグがあった
-            pttBtn.classList.remove('recording');
+    // 何らかの理由でUIが「処理中」等のまま固まった場合に強制復帰させる
+    function forceResetRecordingUI(message) {
+        clearWatchdog();
+        recognitionActive = false;
+        isRecording = false;
+        pttBtn.classList.remove('recording');
+        statusText.innerText = message;
+    }
 
-            if (e.error === 'no-speech') {
-                statusText.innerText = '発話が検出されませんでした。もう一度お試しください。';
-            } else if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-                statusText.innerText = 'マイクの使用が許可されていません。ブラウザの設定をご確認ください。';
-            } else {
-                statusText.innerText = `認識エラー: ${e.error}`;
-            }
-        };
+    function handleRecognitionError(e) {
+        console.error(e);
+        recognitionActive = false;
+        isRecording = false; // ★これが無いと以後ボタンが二度と反応しなくなるバグがあった
+        clearWatchdog();
+        pttBtn.classList.remove('recording');
 
-        // ブラウザ側が自動でタイムアウトした場合など、resultなしで終了するケースに対応
-        recognition.onend = () => {
-            recognitionActive = false;
-            isRecording = false;
-            pttBtn.classList.remove('recording');
-            if (statusText.innerText === '発話を認識中...') {
-                statusText.innerText = 'ボタンを押しながら話してください（英語）';
-            }
-        };
+        if (e.error === 'no-speech') {
+            statusText.innerText = '発話が検出されませんでした。もう一度お試しください。';
+        } else if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+            statusText.innerText = 'マイクの使用が許可されていません。ブラウザの設定をご確認ください。';
+        } else {
+            statusText.innerText = `認識エラー: ${e.error}`;
+        }
+    }
+
+    // ブラウザ側が自動でタイムアウトした場合や、発話が短すぎて
+    // onresult/onerrorのどちらも発火せずに終了するケースに対応
+    function handleRecognitionEnd() {
+        recognitionActive = false;
+        isRecording = false;
+        clearWatchdog();
+        pttBtn.classList.remove('recording');
+
+        // onresultで既にgenerateAiResponse()が呼ばれている場合は何もしない
+        // （ステータス文言は「AIが考え中...」等に上書き済みのため）
+        if (!resultReceivedThisSession) {
+            statusText.innerText = '認識できませんでした。もう一度ボタンを押して話してください。';
+        }
     }
 
     function onPressStart() {
@@ -489,8 +512,8 @@
                 addMessageToTimeline('ai', aiText);
                 speak(aiText);
 
-                pttBtn.disabled = !recognition; // 音声認識非対応ブラウザでは押せないままにする
-                statusText.innerText = recognition
+                pttBtn.disabled = !speechSupported; // 音声認識非対応ブラウザでは押せないままにする
+                statusText.innerText = speechSupported
                     ? 'ボタンを押しながら話してください（英語）'
                     : 'このブラウザでは音声入力は利用できません（読み上げのみ）';
             } else if (candidate?.finishReason === 'SAFETY') {
@@ -527,14 +550,25 @@
     }
 
     function startSpeechRecognition() {
-        if (!recognition || isRecording || recognitionActive) return;
+        if (!speechSupported || isRecording || recognitionActive) return;
         try {
             synth.cancel();
             isRecording = true;
             recognitionActive = true;
+            resultReceivedThisSession = false;
             pttBtn.classList.add('recording');
             statusText.innerText = '発話を認識中...';
+
+            recognition = createRecognition(); // Safari対策：毎回作り直す
             recognition.start();
+
+            // 万一どのイベントも発火しない場合の保険（最大15秒で強制終了）
+            clearWatchdog();
+            watchdogTimer = setTimeout(() => {
+                console.warn('SpeechRecognition timeout: no event fired within 15s');
+                try { recognition && recognition.abort(); } catch (e) { /* ignore */ }
+                forceResetRecordingUI('タイムアウトしました。もう一度ボタンを押して話してください。');
+            }, 15000);
         } catch (e) {
             console.error(e);
             statusText.innerText = `マイク起動エラー: ${e.message}`;
@@ -545,21 +579,31 @@
     }
 
     function stopSpeechRecognition() {
-        if (!recognition || !isRecording) return;
+        if (!isRecording) return;
         isRecording = false;
         pttBtn.classList.remove('recording');
         statusText.innerText = '処理中...';
         try {
-            recognition.stop();
+            recognition && recognition.stop();
         } catch (e) {
             console.error(e);
             recognitionActive = false;
         }
+
+        // stop()を呼んでも一部ブラウザ（iOS Safari系）ではイベントが返ってこないことがあるため、
+        // 短時間で応答がなければ強制的にUIを復帰させる
+        clearWatchdog();
+        watchdogTimer = setTimeout(() => {
+            console.warn('SpeechRecognition stop() timeout: forcing UI reset');
+            forceResetRecordingUI('応答がありませんでした。もう一度ボタンを押して話してください。');
+        }, 6000);
     }
 
     async function handleSpeechResult(event) {
         const userText = event.results[0][0].transcript;
         recognitionActive = false;
+        resultReceivedThisSession = true;
+        clearWatchdog();
         if (!userText) return;
 
         addMessageToTimeline('user', userText);
