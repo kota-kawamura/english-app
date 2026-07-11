@@ -266,6 +266,7 @@
             <button class="ptt-btn" id="ptt-btn" disabled>HOLD<br>TO TALK</button>
         </div>
         <div class="status-text" id="status-text">APIキーを入力し、会話を開始してください</div>
+        <div id="debug-log" style="font-size:10px;color:#aaa;padding:0 15px 10px;max-height:80px;overflow-y:auto;font-family:monospace;white-space:pre-wrap;"></div>
     </div>
 </div>
 
@@ -288,6 +289,27 @@
     let recognition = null; // 現在のセッションで使っているインスタンス（毎回作り直す）
     let watchdogTimer = null; // iOS/Safariでイベントが一切発火しないケース用の保険タイマー
 
+    const debugLogEl = document.getElementById('debug-log');
+    function debugLog(msg) {
+        const t = new Date().toLocaleTimeString('ja-JP', { hour12: false });
+        console.log(`[${t}] ${msg}`);
+        if (debugLogEl) {
+            debugLogEl.textContent += `[${t}] ${msg}\n`;
+            debugLogEl.scrollTop = debugLogEl.scrollHeight;
+        }
+    }
+    debugLog(`SpeechRecognition対応: ${speechSupported} / UA: ${navigator.userAgent}`);
+    debugLog(`secure context (https/localhost): ${window.isSecureContext}`);
+    try {
+        if (navigator.permissions && navigator.permissions.query) {
+            navigator.permissions.query({ name: 'microphone' }).then(status => {
+                debugLog(`マイク権限の状態: ${status.state}`);
+            }).catch(() => debugLog('マイク権限の事前確認は非対応（Safari系では想定内）'));
+        }
+    } catch (e) {
+        debugLog('マイク権限の事前確認は非対応（Safari系では想定内）');
+    }
+
     // iOS(Safari系エンジン)はイベントの取りこぼしや使い回し時の不安定動作が知られているため、
     // start()のたびに新しいSpeechRecognitionインスタンスを生成する
     function createRecognition() {
@@ -295,9 +317,15 @@
         r.lang = 'en-US';
         r.interimResults = false;
         r.maxAlternatives = 1;
-        r.onresult = handleSpeechResult;
-        r.onerror = handleRecognitionError;
-        r.onend = handleRecognitionEnd;
+        r.onstart = () => debugLog('onstart: 認識開始');
+        r.onaudiostart = () => debugLog('onaudiostart: 音声入力の受信開始');
+        r.onspeechstart = () => debugLog('onspeechstart: 発話を検出');
+        r.onspeechend = () => debugLog('onspeechend: 発話終了を検出');
+        r.onaudioend = () => debugLog('onaudioend: 音声入力の受信終了');
+        r.onnomatch = () => debugLog('onnomatch: 認識はできたが該当なし');
+        r.onresult = (e) => { debugLog(`onresult: "${e.results?.[0]?.[0]?.transcript || ''}"`); handleSpeechResult(e); };
+        r.onerror = (e) => { debugLog(`onerror: ${e.error} ${e.message || ''}`); handleRecognitionError(e); };
+        r.onend = () => { debugLog('onend: 認識セッション終了'); handleRecognitionEnd(); };
         return r;
     }
 
@@ -551,6 +579,7 @@
 
     function startSpeechRecognition() {
         if (!speechSupported || isRecording || recognitionActive) return;
+        debugLog('ボタン押下 → recognition.start()を呼びます');
         try {
             synth.cancel();
             isRecording = true;
@@ -565,12 +594,12 @@
             // 万一どのイベントも発火しない場合の保険（最大15秒で強制終了）
             clearWatchdog();
             watchdogTimer = setTimeout(() => {
-                console.warn('SpeechRecognition timeout: no event fired within 15s');
+                debugLog('⚠️ 15秒間どのイベントも発火せず（タイムアウト）');
                 try { recognition && recognition.abort(); } catch (e) { /* ignore */ }
                 forceResetRecordingUI('タイムアウトしました。もう一度ボタンを押して話してください。');
             }, 15000);
         } catch (e) {
-            console.error(e);
+            debugLog(`❌ start()で例外: ${e.name} ${e.message}`);
             statusText.innerText = `マイク起動エラー: ${e.message}`;
             pttBtn.classList.remove('recording');
             isRecording = false;
@@ -580,13 +609,14 @@
 
     function stopSpeechRecognition() {
         if (!isRecording) return;
+        debugLog('ボタン解放 → recognition.stop()を呼びます');
         isRecording = false;
         pttBtn.classList.remove('recording');
         statusText.innerText = '処理中...';
         try {
             recognition && recognition.stop();
         } catch (e) {
-            console.error(e);
+            debugLog(`❌ stop()で例外: ${e.name} ${e.message}`);
             recognitionActive = false;
         }
 
@@ -594,7 +624,7 @@
         // 短時間で応答がなければ強制的にUIを復帰させる
         clearWatchdog();
         watchdogTimer = setTimeout(() => {
-            console.warn('SpeechRecognition stop() timeout: forcing UI reset');
+            debugLog('⚠️ stop()後6秒間どのイベントも発火せず（強制リセット）');
             forceResetRecordingUI('応答がありませんでした。もう一度ボタンを押して話してください。');
         }, 6000);
     }
